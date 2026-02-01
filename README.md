@@ -1,4 +1,5 @@
 # DTV-All-in-One Docker
+[日本語版 README](./README.jp.md)
 A simple project to **automate source building, environment setup, and channel scanning** for DTV using **Docker**.
 
 ## Overview
