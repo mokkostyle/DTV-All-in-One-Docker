@@ -1,0 +1,232 @@
+services:
+  # --- 1. 共通ビルド環境 (すべてのビルドの親) ---
+  common-builder:
+    build:
+      context: .
+      dockerfile: ./build/builder/common-builder.Dockerfile
+    image: dtv-build-common-builder
+    command: ["echo", "build finished"]
+    volumes: ["./dist:/out"]
+
+  # --- 2. 各コンポーネントのビルド ---
+  build-libarib25:
+    build:
+      context: .
+      dockerfile: ./build/builder/libarib25.Dockerfile
+    image: dtv-build-libarib25
+    volumes: ["./dist:/out"]
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-recisdb:
+    build:
+      context: .
+      dockerfile: ./build/builder/recisdb.Dockerfile
+    image: dtv-build-recisdb
+    volumes: ["./dist:/out"]
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-isdbscanner:
+    build:
+      context: .
+      dockerfile: ./build/builder/isdbscanner.Dockerfile
+    image: dtv-build-isdbscanner
+    volumes: ["./dist:/out"]
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-mirakurun:
+    build:
+      context: .
+      dockerfile: ./build/builder/mirakurun.Dockerfile
+    image: dtv-build-mirakurun
+    volumes: 
+      - "./dist:/out"
+      - "./conf/mirakurun/server.yml:/out/usr/local/lib/node_modules/mirakurun/config/server.yml"
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-edcb:
+    build:
+      context: .
+      dockerfile: ./build/builder/edcb.Dockerfile
+    image: dtv-build-edcb
+    volumes: 
+      - ./dist:/out
+      - ./conf/edcb/EpgTimerSrv.ini:/out/var/local/edcb/EpgTimerSrv.ini
+      - ./conf/edcb/HttpPublic.ini:/out/var/local/edcb/Setting/HttpPublic.ini
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-konomitv:
+    build:
+      context: .
+      dockerfile: ./build/builder/konomitv.Dockerfile
+    image: dtv-build-konomitv
+    volumes: 
+      - "./dist:/out"
+      - "./conf/konomitv/config.yaml:/out/code/config.yaml"
+    command: ["echo", "build finished"]
+    depends_on:
+      common-builder:
+        condition: service_completed_successfully
+
+  build-runtime:
+    build:
+      context: .
+      dockerfile: ./build/builder/runtime.Dockerfile
+    image: dtv-build-runtime    
+    volumes:
+      # ビルド成果物のマウント
+      - ./dist/usr/local/etc/mirakurun/:/usr/local/etc/mirakurun/
+      - ./dist/usr/local/lib/edcb/:/usr/local/lib/edcb/
+      - ./dist/var/local/edcb/:/var/local/edcb/
+      - ./dist/code/:/code/
+      - ./dist/:/out/
+    command: ["echo", "build finished"]
+    depends_on:
+      build-libarib25:
+        condition: service_completed_successfully
+      build-recisdb:
+        condition: service_completed_successfully
+      build-isdbscanner:
+        condition: service_completed_successfully
+      build-mirakurun:
+        condition: service_completed_successfully
+      build-edcb:
+        condition: service_completed_successfully
+      build-konomitv:
+        condition: service_completed_successfully
+
+  # --- 3. チャンネルスキャン (ビルド済み成果物から設定生成) ---
+  channel-scanner:
+    build:
+      context: .
+      dockerfile: ./build/builder/channel-scanner.Dockerfile
+    image: dtv-build-channel-scanner
+    command: ["echo", "build finished"]
+    # チューナーを叩く必要があるため privileged と network:host を推奨
+    privileged: true
+    network_mode: host
+    devices:
+      - /dev:/dev  # すべてのデバイスをパススルー
+      # --- QSV (Intel) / VCE (AMD) 用のデバイスマウント ---
+      - /dev/dri:/dev/dri # GPUのレンダリング・エンコードノード一式
+      - /dev/bus/usb:/dev/bus/usb
+      - /dev/dvb:/dev/dvb # DVBチューナーの場合
+      - /dev/bus:/dev/bus
+      - /dev/px4video0:/dev/px4video0
+      - /dev/px4video1:/dev/px4video1
+      - /dev/px4video2:/dev/px4video2
+      - /dev/px4video3:/dev/px4video3
+      - /dev/px4video4:/dev/px4video4
+      - /dev/px4video5:/dev/px4video5
+      - /dev/px4video6:/dev/px4video6
+      - /dev/px4video7:/dev/px4video7
+    volumes: 
+      - ./tmp/:/tmp/
+      - ./dist/scan_result/:/tmp/scan/
+      - ./conf/edcb/BonDriver_mirakc(LinuxMirakc).ChSet4.txt:/out/EDCB-Wine/BonDriver_mirakc(LinuxMirakc).ChSet4.txt
+      - ./conf/edcb/ChSet5.txt:/out/EDCB-Wine/ChSet5.txt
+      - ./conf/mirakurun/channels.yml:/out/Mirakurun/channels.yml
+      - ./conf/mirakurun/tuners.yml:/out/Mirakurun/tuners.yml
+    depends_on:
+      build-recisdb:
+        condition: service_completed_successfully
+      build-isdbscanner:
+        condition: service_completed_successfully
+      build-libarib25:
+        condition: service_completed_successfully
+      build-edcb:
+        condition: service_completed_successfully
+      build-mirakurun:
+        condition: service_completed_successfully
+      build-runtime:
+        condition: service_completed_successfully
+
+  # --- 4. 実行ステージ (Runtime) ---
+  konomitv-app:
+    build:
+      context: .
+      dockerfile: ./build/runtime/Dockerfile
+    container_name: konomitv-app
+    restart: unless-stopped
+    image: dtv-server-runtime
+    privileged: true
+    shm_size: '2gb'
+    depends_on:
+      channel-scanner:
+        condition: service_completed_successfully
+      build-runtime:
+        condition: service_completed_successfully
+
+    environment:
+      TZ: Asia/Tokyo
+      DISABLE_DEBUG: "${DISABLE_DEBUG:-1}"
+      DISABLE_PCSCD: "${DISABLE_PCSCD:-0}"
+      DISABLE_B25_TEST: "${DISABLE_B25_TEST:-0}"
+      DOCKER_NETWORK: host
+    
+    # network_mode: host
+    ports:
+      - "40772:40772" # Mirakurun
+      - "4510:4510"   # EDCB サービス
+      - "5510:5510"   # EDCB WebUI
+      - "7000:7000"   # KonomiTV WebUI
+      - "7010:7010"   # KonomiTV ストリーミングポート
+      - "8000:8000"   # KonomiTV WebUI"
+
+    devices:
+      - /dev:/dev  # すべてのデバイスをパススルー
+      # --- QSV (Intel) / VCE (AMD) 用のデバイスマウント ---
+      - /dev/dri:/dev/dri # GPUのレンダリング・エンコードノード一式
+      - /dev/bus/usb:/dev/bus/usb
+      - /dev/dvb:/dev/dvb # DVBチューナーの場合
+      - /dev/bus:/dev/bus
+      - /dev/px4video0:/dev/px4video0
+      - /dev/px4video1:/dev/px4video1
+      - /dev/px4video2:/dev/px4video2
+      - /dev/px4video3:/dev/px4video3
+      - /dev/px4video4:/dev/px4video4
+      - /dev/px4video5:/dev/px4video5
+      - /dev/px4video6:/dev/px4video6
+      - /dev/px4video7:/dev/px4video7
+    
+    volumes:
+      # ホストのルートファイルシステムを読み取り専用でマウント
+      - /:/host-rootfs/:ro
+      # ビルド成果物のマウント
+      - ./dist/usr/local/etc/mirakurun/:/usr/local/etc/mirakurun/
+      - ./dist/usr/local/lib/edcb/:/usr/local/lib/edcb/
+      - ./dist/var/local/edcb/:/var/local/edcb/
+      - ./dist/code/:/code/
+      # データ永続化
+      - ./data/edcb/EpgData/:/var/local/edcb/Setting/EpgData/
+      - ./data/edcb/LogoData/:/var/local/edcb/Setting/LogoData/
+      - ./data/mirakurun/:/usr/local/var/db/mirakurun/
+      - ./data/konomitv/:/code/server/data/
+      - ./logs/konomitv/:/code/server/logs/
+      # 設定ファイルは個別、または conf ディレクトリからバインドマウント
+      # これにより、ホストの ./conf を編集すればコンテナ内も即座に変わります
+      - ./conf/konomitv/config.yaml:/code/config.yaml
+      - ./conf/edcb/BonDriver_mirakc(LinuxMirakc).ChSet4.txt:/var/local/edcb/Setting/BonDriver_mirakc(LinuxMirakc).ChSet4.txt
+      - ./conf/edcb/ChSet5.txt:/var/local/edcb/Setting/ChSet5.txt
+      - ./conf/edcb/EpgTimerSrv.ini:/var/local/edcb/EpgTimerSrv.ini
+      - ./conf/edcb/HttpPublic.ini:/var/local/edcb/Setting/HttpPublic.ini
+      - ./conf/mirakurun/channels.yml:/usr/local/etc/mirakurun/channels.yml
+      - ./conf/mirakurun/tuners.yml:/usr/local/etc/mirakurun/tuners.yml
+      - ./conf/mirakurun/server.yml:/usr/local/etc/mirakurun/server.yml
+      - ./conf/scan_result/:/tmp/
+      
+      
